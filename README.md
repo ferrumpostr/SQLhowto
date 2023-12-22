@@ -68,3 +68,153 @@ This will save us approximately a quarter of the time:
   But here comes the interesting part. December is not completed; it's ongoing "right now." Therefore, simply executing four independent queries sequentially with the necessary aggregation on the raw data won't work— the numbers **will diverge**.
 
 This means we need to somehow "freeze" the data, and in PostgreSQL, we can do this in various ways.
+
+## Temporary Table
+The first approach involves creating a temporary table with pre-aggregated data:
+```
+CREATE TEMPORARY TABLE preagg AS
+SELECT
+  ts::date dt
+, extract(hour FROM ts) hr
+, count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31'
+GROUP BY
+  1, 2;
+```
+Since we still need to "write" the data, executing this query will take approximately **50% longer**. However, from this point onward, everything is simple and fast - each query takes less than 1ms:
+
+```
+TABLE preagg;
+
+-- by days
+SELECT
+  dt
+, sum(count)
+FROM
+  preagg
+GROUP BY 1;
+
+--by hours
+SELECT
+  hr
+, sum(count)
+FROM
+  preagg
+GROUP BY 1;
+
+-- "sum"
+SELECT
+  sum(count)
+FROM
+  preagg;
+```
+However, with active use of temporary tables, the system catalog (tables like pg_class, pg_attribute, etc.) may grow, gradually slowing down all queries.
+
+## Multiple Queries in a Transaction
+
+Alternatively, you can consider using a transaction in REPEATABLE READ mode, where each query will "walk" through the original data:
+
+```
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+
+-- по "клеткам"
+SELECT
+  ts::date dt
+, extract(hour FROM ts) hr
+, count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31'
+GROUP BY
+  1, 2;
+
+-- по дням
+SELECT
+  ts::date dt
+, count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31'
+GROUP BY
+  1;
+
+-- по часам
+SELECT
+  extract(hour FROM ts) hr
+, count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31'
+GROUP BY
+  1;
+
+-- "итого"
+SELECT
+  count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31';
+
+COMMIT;
+```
+
+However, we re-read the original data and calculated the aggregation keys each time, **increasing the query execution time** by approximately 4 times. Not to mention that prolonged transactions (if this report is lengthy) in PostgreSQL can pose issues.
+
+CTE + UNION ALL
+So, why not calculate and return all the data in a single query?.
+
+Let's agree on the response format:
+
+- `(dt IS NOT NULL, hr IS NOT NULL)` - "cell"
+- `(dt IS NOT NULL, hr IS NULL)` - by days
+- `(dt IS NULL, hr IS NOT NULL)` - by hours
+- `(dt IS NULL, hr IS NULL)` - "total"
+
+Instead of a temporary table, let's use CTE, and we'll "glue" the results of the queries using UNION ALL:
+```
+WITH preagg AS (
+  SELECT
+    ts::date dt
+  , extract(hour FROM ts) hr
+  , count(*)
+  FROM
+    timefact
+  WHERE
+    ts BETWEEN '2023-12-01' AND '2023-12-31'
+  GROUP BY
+    1, 2
+)
+  TABLE preagg
+UNION ALL
+  SELECT
+    dt
+  , NULL hr
+  , sum(count) count
+  FROM
+    preagg
+  GROUP BY 1
+UNION ALL
+  SELECT
+    NULL dt
+  , hr
+  , sum(count) count
+  FROM
+    preagg
+  GROUP BY 2
+UNION ALL
+  SELECT
+    NULL dt
+  , NULL hr
+  , sum(count) count
+  FROM
+    preagg;
+```
+<p align="center">
+<img src="https://habrastorage.org/getpro/habr/upload_files/c4f/adf/7c9/c4fadf7c9340b3d2182719684a0d3821.png" alt="Alt Text">
