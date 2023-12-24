@@ -218,3 +218,44 @@ UNION ALL
 ```
 <p align="center">
 <img src="https://habrastorage.org/getpro/habr/upload_files/c4f/adf/7c9/c4fadf7c9340b3d2182719684a0d3821.png" alt="Alt Text">
+
+## GROUPING SETS
+
+Nevertheless, it seems a bit *"untidy"* - we had to write too much repetitive code. However, this can be avoided by utilizing the grouping sets functionality.
+
+The required grouping sets can be expressed as follows:
+```
+GROUPING SETS (
+  (dt, hr)
+, (dt    )
+, (    hr)
+, (      )
+)
+-- или короче:
+GROUPING SETS (
+  CUBE(dt, hr)
+)
+```
+After that, our query is reduced to just this:
+```
+SELECT
+  ts::date dt
+, extract(hour FROM ts) hr
+, count(*)
+FROM
+  timefact
+WHERE
+  ts BETWEEN '2023-12-01' AND '2023-12-31'
+GROUP BY
+  GROUPING SETS (
+    CUBE(1, 2)
+  );
+```
+Analyzing such a plan is much more enjoyable:
+
+<p align="center">
+<img src="https://habrastorage.org/r/w1560/getpro/habr/upload_files/d04/f77/59d/d04f7759d007c55c05f9bb39048bb095.png" alt="Alt Text">
+
+In most cases, it is worth stopping at this point if the aggregation key values do not require additional calculations.
+
+However, this is not our case, as we computed keys for each original record for each aggregation variant independently - this significantly increased the execution time of our query!
