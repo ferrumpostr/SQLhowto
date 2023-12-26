@@ -259,3 +259,39 @@ Analyzing such a plan is much more enjoyable:
 In most cases, it is worth stopping at this point if the aggregation key values do not require additional calculations.
 
 However, this is not our case, as we computed keys for each original record for each aggregation variant independently - this significantly increased the execution time of our query!
+
+## CTE + GROUPING SETS
+Let's 'hide' the computation of keys and preliminary aggregation back 'under CTE' and remove redundant calculations from `GROUPING SETS`:
+```
+WITH preagg AS (
+  SELECT
+    ts::date dt
+  , extract(hour FROM ts) hr
+  , count(*)
+  FROM
+    timefact
+  WHERE
+    ts BETWEEN '2023-12-01' AND '2023-12-31'
+  GROUP BY
+    1, 2
+)
+  TABLE preagg
+UNION ALL
+  SELECT
+    dt
+  , hr
+  , sum(count) count
+  FROM
+    preagg
+  GROUP BY
+    GROUPING SETS (
+      1
+    , 2
+    , ()
+    );
+```
+Now our query is just as efficient as the CTE + `UNION ALL` approach, but we had to write significantly less code:
+<p align="center">
+<img src="https://habrastorage.org/r/w1560/getpro/habr/upload_files/450/0bc/064/4500bc06483a12a9218dac8e0f1476e1.png" alt="Alt Text">
+<p align="center">
+<img src="https://habrastorage.org/r/w1560/getpro/habr/upload_files/c97/365/fbf/c97365fbf3ed5d2953874c52535feea1.png" alt="Alt Text">
